@@ -338,7 +338,7 @@ CONFIRMDELETE
         # A route for POST requests, to actually delete the record
         post qr[$args{prefix}/delete/?(.+)?$] => sub {
             my ($id) = params->{record_id} || splat;
-            database->quick_delete($table_name, { $key_column => $id })
+            $dbh->quick_delete($table_name, { $key_column => $id })
                 or return _apply_template("<p>Failed to delete!</p>", $args{'template'});
 
             redirect _construct_url($args{prefix});
@@ -360,7 +360,7 @@ sub _create_add_edit_route {
     my $default_field_values;
     if ($id) {
         $default_field_values
-            = database->quick_select($table_name, { $key_column => $id });
+            = $dbh->quick_select($table_name, { $key_column => $id });
     }
 
     # Find out about table columns:
@@ -427,7 +427,7 @@ sub _create_add_edit_route {
             # Find out the possible values for this column from the other table:
             my %possible_values;
             debug "Looking for rows for foreign relation: " => $foreign_key;
-            for my $row (database->quick_select($foreign_key->{table}, {})) {
+            for my $row ($dbh->quick_select($foreign_key->{table}, {})) {
                 debug "Row from foreign relation: " => $row;
                 $possible_values{ $row->{ $foreign_key->{key_column} } }
                     = $row->{ $foreign_key->{label_column} };
@@ -513,11 +513,11 @@ sub _create_add_edit_route {
         if (exists params->{$key_column}) {
 
             # We're editing an existing record
-            $success = database->quick_update($table_name,
+            $success = $dbh->quick_update($table_name,
                 { $key_column => params->{$key_column} }, \%params);
             $verb = 'update';
         } else {
-            $success = database->quick_insert($table_name, \%params);
+            $success = $dbh->quick_insert($table_name, \%params);
             $verb = 'create new';
         }
 
@@ -614,9 +614,9 @@ SEARCHFORM
     if ($args->{foreign_keys}) {
         while (my($col, $foreign_key) = each(%{ $args->{foreign_keys} })) {
             @select_cols = grep { $_ ne $col } @select_cols;
-            my $ftable = database->quote_identifier($foreign_key->{table});
-            my $fcol   = database->quote_identifier($foreign_key->{label_column});
-            my $lcol   = database->quote_identifier(
+            my $ftable = $dbh->quote_identifier($foreign_key->{table});
+            my $fcol   = $dbh->quote_identifier($foreign_key->{label_column});
+            my $lcol   = $dbh->quote_identifier(
                 $args->{labels}{$col} || $col
             );
             push @foreign_cols, "$ftable.$fcol AS $lcol";
@@ -625,7 +625,7 @@ SEARCHFORM
 
 
     my $col_list = join(',', 
-        map( { $table_name . "." .database->quote_identifier($_) } @select_cols ),
+        map( { $table_name . "." .$dbh->quote_identifier($_) } @select_cols ),
         @foreign_cols, # already assembled from quoted identifiers
     );
     my $add_actions = $args->{editable} 
@@ -659,9 +659,9 @@ SEARCHFORM
     # If we have foreign key relationship info, we need to join on those tables:
     if ($args->{foreign_keys}) {
         while (my($col, $foreign_key) = each %{ $args->{foreign_keys} }) {
-            my $ftable = database->quote_identifier($foreign_key->{table});
-            my $lkey   = database->quote_identifier($col);
-            my $rkey   = database->quote_identifier($foreign_key->{key_column});
+            my $ftable = $dbh->quote_identifier($foreign_key->{table});
+            my $lkey   = $dbh->quote_identifier($col);
+            my $rkey   = $dbh->quote_identifier($foreign_key->{key_column});
             # Identifiers quoted above, and $table_name quoted further up, so
             # all safe to interpolate
             $query .= " JOIN $ftable ON $table_name.$lkey = $ftable.$rkey ";
@@ -714,7 +714,6 @@ SEARCHFORM
                     "?o=$col_name&d=$direction&q=$q&searchfield=$sf";
             $col_name => "<a href=\"$url\">$col_name&nbsp;$direction_char</a>";
         } @$columns;
-
         $query .= " ORDER BY " . database->quote_identifier($order_by_column)
                 . " " . $order_by_direction . " ";
     }
@@ -751,13 +750,11 @@ SEARCHFORM
             $query .= " LIMIT $limit OFFSET $offset " ;
     }
 
-
-
     debug("Running query: $query");
     my $sth = $dbh->prepare($query);
     $sth->execute()
         or die "Failed to query for records in $table_name - "
-        . database->errstr;
+        . $dbh->errstr;
 
     if ($args->{downloadable} && params->{format} ) {
         ##Return results as a downloaded file, instead of generating the HTML table.
