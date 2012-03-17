@@ -340,8 +340,10 @@ CONFIRMDELETE
         post "$args{prefix}/delete$path" => sub {
             my $params = params;
             my $where  = _create_where($key_columns, $params);
+            $args{pre_delete}->() if($args{pre_delete});
             $dbh->quick_delete($table_name, $where)
                 or return _apply_template("<p>Failed to delete!</p>", $args{'template'});
+            $args{post_delete}->() if($args{post_delete});
 
             redirect _construct_url($args{prefix});
         };
@@ -533,10 +535,14 @@ sub _create_add_edit_route {
 
         my $where = _create_where($key_columns, $params);
         if (params->{_op} eq 'edit') {
+            $args->{pre_update}->() if($args->{pre_update});
             $success = $dbh->quick_update($table_name, $where, \%params);
+            $args->{post_update}->() if($args->{post_update});
             $verb = 'update';
         } elsif (params->{_op} eq 'add') {
+            $args->{pre_insert}->() if($args->{pre_insert});
             $success = $dbh->quick_insert($table_name, \%params);
+            $args->{post_insert}->() if($args->{post_insert});
             $verb = 'create new';
         }
 
