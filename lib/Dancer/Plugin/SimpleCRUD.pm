@@ -284,7 +284,7 @@ sub simple_crud {
         if !exists $args{deletable} && exists $args{deleteable};
 
     # Sane default values:
-    $args{key_column}   ||= 'id';
+    $args{key_columns}  ||= ['id'];
     $args{record_title} ||= 'record';
     $args{editable} = 1 unless exists $args{editable};
     $args{query_auto_focus} = 1 unless exists $args{query_auto_focus};
@@ -292,36 +292,37 @@ sub simple_crud {
     # Sanitise things we'll have to interpolate into queries (yes, that makes me
     # feel bad, but you can't use params for field/table names):
     my $table_name = $args{db_table};
-    my $key_column = $args{key_column};
-    for ($table_name, $key_column) {
+    my $key_columns = $args{key_columns};
+    for ($table_name, @$key_columns) {
         die "Invalid table name/key column - SQL injection attempt?" if /--/;
         s/[^a-zA-Z0-9_-]//g;
     }
 
     # OK, create a route handler to deal with adding/editing:
     my $handler
-        = sub { _create_add_edit_route(\%args, $table_name, $key_column); };
+        = sub { _create_add_edit_route(\%args, $table_name, $key_columns); };
 
     if ($args{editable}) {
+        my $path = _create_key_path($key_columns);
         Dancer::Logger::debug("Setting up routes for $args{prefix}/add etc");
-        any ['get', 'post'] => "$args{prefix}/add"      => $handler;
-        any ['get', 'post'] => "$args{prefix}/edit/:id" => $handler;
+        any ['get', 'post'] => "$args{prefix}/add"       => $handler;
+        any ['get', 'post'] => "$args{prefix}/edit$path" => $handler;
     }
 
     # And a route to list records already in the table:
     my $list_handler
-        = sub { _create_list_handler(\%args, $table_name, $key_column); };
+        = sub { _create_list_handler(\%args, $table_name, $key_columns); };
     get "$args{prefix}" => $list_handler;
 
     # If we should allow deletion of records, set up routes to handle that,
     # too.
     if ($args{editable} && $args{deletable}) {
-
+        my $path = _create_key_path($key_columns);
         # A route for GET requests, to present a "Do you want to delete this"
         # message with a form to submit (this is only for browsers which didn't
         # support Javascript, otherwise the list page will have POSTed the ID
         # to us) (or they just came here directly for some reason)
-        get "$args{prefix}/delete/:id" => sub {
+        get "$args{prefix}/delete$path" => sub {
             return _apply_template(<<CONFIRMDELETE, $args{'template'});
 <p>
 Do you really wish to delete this record?
@@ -336,9 +337,10 @@ CONFIRMDELETE
         };
 
         # A route for POST requests, to actually delete the record
-        post qr[$args{prefix}/delete/?(.+)?$] => sub {
-            my ($id) = params->{record_id} || splat;
-            $dbh->quick_delete($table_name, { $key_column => $id })
+        post "$args{prefix}/delete$path" => sub {
+            my $params = params;
+            my $where  = _create_where($key_columns, $params);
+            $dbh->quick_delete($table_name, $where)
                 or return _apply_template("<p>Failed to delete!</p>", $args{'template'});
 
             redirect _construct_url($args{prefix});
@@ -351,16 +353,16 @@ register simple_crud => \&simple_crud;
 register_plugin;
 
 sub _create_add_edit_route {
-    my ($args, $table_name, $key_column) = @_;
+    my ($args, $table_name, $key_columns) = @_;
     my $params = params;
     my $id     = $params->{id};
 
     my $dbh = database($args->{db_connection_name});
 
     my $default_field_values;
-    if ($id) {
+    if (my $where = _create_where($key_columns, $params)) {
         $default_field_values
-            = $dbh->quick_select($table_name, { $key_column => $id });
+            = $dbh->quick_select($table_name, $where);
     }
 
     # Find out about table columns:
@@ -375,9 +377,11 @@ sub _create_add_edit_route {
         @editable_columns = @{ $args->{editable_columns} };
     } else {
 
-        # OK, take all the columns from the table, except the key field:
-        @editable_columns = grep { $_ ne $key_column }
-            map { $_->{COLUMN_NAME} } @$all_table_columns;
+#        # OK, take all the columns from the table, except the key field:
+#        @editable_columns = grep {
+#            my $column = $_;
+#            ! grep {$_ eq $column} @$key_columns
+#        } map { $_->{COLUMN_NAME} } @$all_table_columns;
     }
 
     if ($args->{not_editable_columns}) {
@@ -389,7 +393,11 @@ sub _create_add_edit_route {
     # Some DWIMery: if we don't have a validation rule specified for a
     # field, and it's pretty clear what it is supposed to be, just do it:
     my $validation = $args->{validation} || {};
-    for my $field (grep { $_ ne $key_column } @editable_columns) {
+    my @validate_columns = grep {
+        my $column = $_;
+        ! grep {$_ eq $column} @$key_columns
+    } @editable_columns;
+    for my $field (@validate_columns) {
         next if $validation->{$field};
         if ($field =~ /email/) {
             $validation->{$field} = 'EMAIL';
@@ -447,6 +455,7 @@ sub _create_add_edit_route {
         ? Dancer::Plugin::SimpleCRUD::ParamsObject->new({ params() })
         : undef;
 
+    my $path = _create_value_path($key_columns, $params);
     my $form = CGI::FormBuilder->new(
         fields   => \@editable_columns,
         params   => $paramsobj,
@@ -456,8 +465,8 @@ sub _create_add_edit_route {
         action   => _construct_url(
             $args->{prefix},
             (
-                params->{id}
-                ? '/edit/' . params->{id}
+                $path
+                ? '/edit/' . $path
                 : '/add'
             )
         ),
@@ -478,6 +487,10 @@ sub _create_add_edit_route {
 
         if ($constrain_values{$field}) {
             $field_params{options} = $constrain_values{$field};
+        }
+
+        if ($path && grep{ $_ eq $field } @$key_columns) {
+            $field_params{disabled} = 1;
         }
 
         # Normally, CGI::FormBuilder can guess the type of field perfectly,
@@ -510,15 +523,15 @@ sub _create_add_edit_route {
         $params{$_} = params->{$_} for @editable_columns;
         my $verb;
         my $success;
-        if (exists params->{$key_column}) {
 
-            # We're editing an existing record
-            $success = $dbh->quick_update($table_name,
-                { $key_column => params->{$key_column} }, \%params);
-            $verb = 'update';
-        } else {
+        my $where = _create_where($key_columns, $params);
+        eval {
             $success = $dbh->quick_insert($table_name, \%params);
             $verb = 'create new';
+        };
+        if ($@) {
+            $success = $dbh->quick_update($table_name, $where, \%params);
+            $verb = 'update';
         }
 
         if ($success) {
@@ -543,7 +556,7 @@ sub _create_add_edit_route {
 }
 
 sub _create_list_handler {
-    my ($args, $table_name, $key_column) = @_;
+    my ($args, $table_name, $key_columns) = @_;
 
     my $dbh     = database($args->{db_connection_name});
     my $columns = _find_columns($dbh, $table_name);
@@ -629,7 +642,7 @@ SEARCHFORM
         @foreign_cols, # already assembled from quoted identifiers
     );
     my $add_actions = $args->{editable} 
-        ? ", $table_name.$key_column AS actions" 
+        ? ", $table_name.$key_columns->[0] AS actions" 
         : '';
     my $query = "SELECT $col_list $add_actions FROM $table_name";
 
@@ -690,10 +703,10 @@ SEARCHFORM
     if ($args->{sortable}) {
         my $q = params->{'q'} || "";
         my $sf = params->{searchfield} || "";
-        my $order_by_column = params->{'o'} || $key_column;
+        my $order_by_column = params->{'o'} || $key_columns->[0];
         # Invalid column name ? discard it
         my $valid = grep { $_->{COLUMN_NAME} eq $order_by_column } @$columns;
-        $order_by_column = $key_column unless $valid;
+        $order_by_column = $key_columns->[0] unless $valid;
 
         my $order_by_direction = 
             (exists params->{'d'} && params->{'d'} eq "desc")
@@ -769,19 +782,20 @@ SEARCHFORM
             {
                 column    => 'actions',
                 transform => sub {
-                    my $id = shift;
+                    my ($id, $row) = @_;
+                    my $path = _create_value_path($key_columns, $row);
                     my $action_links;
                     if ($args->{editable}) {
                         my $edit_url
-                            = _construct_url($args->{prefix}, "/edit/$id");
+                            = _construct_url($args->{prefix}, "/edit/$path");
                         $action_links
                             .= qq[<a href="$edit_url" class="edit_link">Edit</a>];
                         if ($args->{deletable}) {
                             my $del_url
-                                = _construct_url($args->{prefix}, "/delete/$id");
+                                = _construct_url($args->{prefix}, "/delete/$path");
                             $action_links
                                 .= qq[ / <a href="$del_url" class="delete_link"]
-                                . qq[ onclick="delrec('$id'); return false;">]
+                                . qq[ onclick="delrec('$path'); return false;">]
                                 . qq[Delete</a>];
                         }
                     }
@@ -946,6 +960,34 @@ sub _construct_url {
     my $url = '/' . join '/', @url_parts;
     $url =~ s{/{2,}}{/}g;
     return uri_for($url);
+}
+
+sub _create_key_path {
+    my $key_columns = shift;
+    return '/:'.join ('/:', @$key_columns);
+}
+
+sub _check {
+    my ($key_columns, $values) = @_;
+    return (@$key_columns == keys(%$values)) ? 1 : 0;
+}
+
+sub _create_value_path {
+    my ($key_columns, $params) = @_;
+    my $values = [];
+    for (@$key_columns) {
+        push @$values, $params->{$_} if($params->{$_});
+    }
+    return @$values ? join('/', @$values) : undef;
+}
+
+sub _create_where {
+    my ($key_columns, $params) = @_;
+    my $values = {};
+    map {
+        $values->{$_} = $params->{$_}
+    } @$key_columns;
+    return (_check($key_columns, $values)) ? $values : undef;
 }
 
 =back
