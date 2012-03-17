@@ -382,6 +382,7 @@ sub _create_add_edit_route {
 #            my $column = $_;
 #            ! grep {$_ eq $column} @$key_columns
 #        } map { $_->{COLUMN_NAME} } @$all_table_columns;
+        @editable_columns = map { $_->{COLUMN_NAME} } @$all_table_columns;
     }
 
     if ($args->{not_editable_columns}) {
@@ -472,6 +473,7 @@ sub _create_add_edit_route {
         ),
     );
     for my $field (@editable_columns) {
+debug($field_type{$field});
         my %field_params = (
             name  => $field,
             value => $default_field_values->{$field} || '',
