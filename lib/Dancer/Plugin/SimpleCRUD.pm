@@ -473,7 +473,6 @@ sub _create_add_edit_route {
         ),
     );
     for my $field (@editable_columns) {
-debug($field_type{$field});
         my %field_params = (
             name  => $field,
             value => $default_field_values->{$field} || '',
@@ -516,6 +515,12 @@ debug($field_type{$field});
         $form->field(%field_params);
     }
 
+    $form->field(
+        name  => '_op',
+        value => $path ? 'edit' : 'add',
+        type  => 'hidden',
+    );
+
     # Now, if all is OK, go ahead and process:
     if (request->{method} eq 'POST' && $form->submitted && $form->validate) {
 
@@ -527,13 +532,12 @@ debug($field_type{$field});
         my $success;
 
         my $where = _create_where($key_columns, $params);
-        eval {
-            $success = $dbh->quick_insert($table_name, \%params);
-            $verb = 'create new';
-        };
-        if ($@) {
+        if (params->{_op} eq 'edit') {
             $success = $dbh->quick_update($table_name, $where, \%params);
             $verb = 'update';
+        } elsif (params->{_op} eq 'add') {
+            $success = $dbh->quick_insert($table_name, \%params);
+            $verb = 'create new';
         }
 
         if ($success) {
